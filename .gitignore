@@ -1,0 +1,5 @@
+*.swp
+
+env/
+console.cgi
+http_server
