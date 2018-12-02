@@ -10,9 +10,14 @@ using std::cout;
 using std::endl;
 using std::string;
 
+boost::asio::io_service ioservice;
+
 class Server {
    public:
     string host, port, file, session;
+
+    Server() : resolv_(ioservice), socket_(ioservice) {}
+
     void connect() {
         if (file.empty()) return;
         file_.open("test_case/" + file);
@@ -29,7 +34,6 @@ class Server {
                         });
                 }
             });
-        ioservice_.run();
     }
 
     void close() {
@@ -114,9 +118,8 @@ class Server {
     }
 
     std::ifstream file_;
-    boost::asio::io_service ioservice_;
-    boost::asio::ip::tcp::resolver resolv_{ioservice_};
-    boost::asio::ip::tcp::socket socket_{ioservice_};
+    boost::asio::ip::tcp::resolver resolv_;
+    boost::asio::ip::tcp::socket socket_;
     boost::asio::streambuf buffer_;
 };
 
@@ -203,5 +206,6 @@ int main(int argc, char** argv) {
     parse_query(server);
     init_console(server);
     for (Server& s : server) s.connect();
+    ioservice.run();
     return 0;
 }
