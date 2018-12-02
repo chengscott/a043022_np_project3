@@ -1,19 +1,143 @@
+#include <boost/asio.hpp>
+#include <boost/regex.hpp>
+#include <cassert>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <regex>
 #include <string>
-#include <vector>
 using std::cout;
 using std::endl;
 using std::string;
 
-struct server_info_t {
-    string host;
-    short port;
-    string file;
-} server_info[5];
+class Server {
+   public:
+    string host, port, file, session;
+    void connect() {
+        if (file.empty()) return;
+        file_.open("test_case/" + file);
+        boost::asio::ip::tcp::resolver::query q{host, port};
+        resolv_.async_resolve(
+            q, [this](const boost::system::error_code& ec,
+                      boost::asio::ip::tcp::resolver::iterator it) {
+                if (!ec) {
+                    socket_.async_connect(
+                        *it, [this](const boost::system::error_code& ec) {
+                            if (!ec) {
+                                receive();
+                            }
+                        });
+                }
+            });
+        ioservice_.run();
+    }
 
-void init_console(const std::vector<server_info_t>& sinfo) {
+    void close() {
+        file_.close();
+        socket_.close();
+    }
+
+   private:
+    void receive() {
+        boost::asio::async_read_until(
+            socket_, buffer_, boost::regex("^% "),
+            [this](boost::system::error_code ec, size_t length) {
+                std::string res((std::istreambuf_iterator<char>(&buffer_)),
+                                std::istreambuf_iterator<char>());
+                output_shell(res);
+                if (!ec)
+                    send();
+                else
+                    close();
+            });
+    }
+
+    void send() {
+        std::string line;
+        if (std::getline(file_, line)) {
+            line += '\n';
+            output_command(line);
+            boost::asio::async_write(
+                socket_, boost::asio::buffer(line),
+                [this](boost::system::error_code ec, std::size_t length) {
+                    if (!ec)
+                        receive();
+                    else
+                        close();
+                });
+        } else
+            close();
+    }
+
+    static void html_escape(string& rhs) {
+        string res;
+        for (char c : rhs) {
+            switch (c) {
+                case '&':
+                    res.append("&amp;");
+                    break;
+                case '\'':
+                    res.append("&quot;");
+                    break;
+                case '\"':
+                    res.append("&apos;");
+                    break;
+                case '<':
+                    res.append("&lt;");
+                    break;
+                case '>':
+                    res.append("&gt;");
+                    break;
+                case '\r':
+                    break;
+                case '\n':
+                    res.append("&NewLine;");
+                    break;
+                default:
+                    res += c;
+                    break;
+            }
+        }
+        res.swap(rhs);
+    }
+
+    void output_shell(string rhs) {
+        html_escape(rhs);
+        cout << "<script>document.getElementById('" << session
+             << "').innerHTML += '" << rhs << "';</script>" << endl;
+    }
+
+    void output_command(string rhs) {
+        html_escape(rhs);
+        cout << "<script>document.getElementById('" << session
+             << "').innerHTML += '<b>" << rhs << "</b>';</script>" << endl;
+    }
+
+    std::ifstream file_;
+    boost::asio::io_service ioservice_;
+    boost::asio::ip::tcp::resolver resolv_{ioservice_};
+    boost::asio::ip::tcp::socket socket_{ioservice_};
+    boost::asio::streambuf buffer_;
+};
+
+void parse_query(Server (&server)[5]) {
+    const string query = string(getenv("QUERY_STRING"));
+    std::regex pattern("&?([^=]+)=([^&]+)");
+    auto it = std::sregex_iterator(query.begin(), query.end(), pattern);
+    auto it_end = std::sregex_iterator();
+    for (; it != it_end; ++it) {
+        string key = (*it)[1].str(), value = (*it)[2].str();
+        int idx = key[1] - '0';
+        if (key[0] == 'h')
+            server[idx].host = value;
+        else if (key[0] == 'p')
+            server[idx].port = value;
+        else if (key[0] == 'f')
+            server[idx].file = value;
+    }
+}
+
+void init_console(const Server (&server)[5]) {
     cout << "Content-type: text/html" << endl << endl;
     const string html_front = R"~~~(
 <!DOCTYPE html>
@@ -61,37 +185,23 @@ void init_console(const std::vector<server_info_t>& sinfo) {
 </html>
     )~~~";
     string table = "<thead><tr>";
-    for (const auto& s : sinfo)
-        table += R"(<th scope="col">)" + s.host + ':' + std::to_string(s.port) +
-                 "</th>";
+    for (const Server& s : server)
+        if (!s.host.empty())
+            table += R"(<th scope="col">)" + s.host + ':' + s.port + "</th>";
     table += "</tr></thead><tbody><tr>";
-    for (size_t i = 0; i < sinfo.size(); ++i)
-        table += R"(<td><pre id="s)" + std::to_string(i) +
-                 R"(" class="mb-0"></pre></td>)";
+    for (const Server& s : server)
+        if (!s.host.empty())
+            table += R"(<td><pre id=")" + s.session +
+                     R"(" class="mb-0"></pre></td>)";
     table += "</tr></tbody>";
     cout << html_front << table << html_end << endl;
 }
 
 int main(int argc, char** argv) {
-    // parse QUERY_STRING
-    const string query = string(getenv("QUERY_STRING"));
-    std::regex pattern("&?([^=]+)=([^&]+)");
-    auto it = std::sregex_iterator(query.begin(), query.end(), pattern);
-    auto it_end = std::sregex_iterator();
-    for (; it != it_end; ++it) {
-        string key = (*it)[1].str(), value = (*it)[2].str();
-        int idx = key[1] - '0';
-        if (key[0] == 'h')
-            server_info[idx].host = value + ".cs.nctu.edu.tw";
-        else if (key[0] == 'p')
-            server_info[idx].port = std::stoi(value);
-        else if (key[0] == 'f')
-            server_info[idx].file = value;
-    }
-    std::vector<server_info_t> sinfo;
-    for (const auto& s : server_info)
-        if (!s.host.empty()) sinfo.push_back(s);
-    // initialize
-    init_console(sinfo);
+    Server server[5];
+    for (size_t i = 0; i < 5; ++i) server[i].session = "s" + std::to_string(i);
+    parse_query(server);
+    init_console(server);
+    for (Server& s : server) s.connect();
     return 0;
 }
