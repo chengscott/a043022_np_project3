@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 using namespace boost::asio::ip;
 
@@ -63,18 +64,19 @@ class Server {
                     std::string line, method, url, protocol;
                     std::stringstream ss(req);
                     ss >> method >> url >> protocol;
-                    assert(method == "GET");
-                    size_t pos = url.find("?");
+                    if (method != "GET")
+                        throw std::logic_error("Request is not GET");
+                    size_t pos = url.find('?');
                     std::string file = url.substr(1, pos - 1),
                                 query = url.substr(pos + 1, url.length() - pos),
                                 host = "";
                     while (ss >> line) {
                         if (line == "Host:") {
                             ss >> line;
-                            if ((pos = line.find(":")) != std::string::npos)
+                            if ((pos = line.find(':')) != std::string::npos)
                                 host = line.substr(0, pos);
                             else
-                                host = pos;
+                                host = line;
                         } else
                             getline(ss, line);
                     }
@@ -98,8 +100,11 @@ class Server {
                     dup2(fd, 1);
                     dup2(fd, 2);
                     std::cout << protocol << " 200 OK\r\n";
+                    flush(std::cout);
                     const char* args[] = {file.c_str(), nullptr};
                     execv(file.c_str(), (char* const*)args);
+                    // execv failed
+                    socket_.close();
                 }
             });
     }
@@ -110,10 +115,19 @@ class Server {
     tcp::acceptor acceptor_;
     tcp::socket socket_;
 };
+
 int main(int argc, char** argv) {
-    unsigned short port = std::atoi(argv[1]);
-    boost::asio::io_service ioservice;
-    Server server(ioservice, port);
-    ioservice.run();
+    try {
+        if (argc < 2) {
+            throw std::logic_error("usage: cgi_server port");
+        }
+        unsigned short port = std::atoi(argv[1]);
+        boost::asio::io_service ioservice;
+        Server server(ioservice, port);
+        ioservice.run();
+    } catch (std::exception& e) {
+        std::cerr << "[Server Error] " << e.what() << std::endl;
+        exit(-1);
+    }
     return 0;
 }
